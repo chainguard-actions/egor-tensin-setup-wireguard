@@ -1,0 +1,97 @@
+name: Test WireGuard setup with optional inputs (preshared_key and keepalive)
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Check WireGuard kernel module availability
+        id: wg_check
+        run: |
+          if sudo modprobe wireguard 2>/dev/null || lsmod | grep -q wireguard; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+            echo "WireGuard kernel module is available"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "WireGuard kernel module is NOT available - test will be skipped"
+          fi
+
+      - name: Install wireguard-tools for key generation
+        if: steps.wg_check.outputs.available == 'true'
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -yq --no-install-recommends wireguard-tools
+
+      - name: Generate WireGuard keys
+        id: keygen
+        if: steps.wg_check.outputs.available == 'true'
+        run: |
+          PRIVATE_KEY=$(wg genkey)
+          PEER_PRIVATE=$(wg genkey)
+          PEER_PUBLIC=$(echo "$PEER_PRIVATE" | wg pubkey)
+          PRESHARED=$(wg genpsk)
+          echo "private_key=$PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+          echo "peer_public=$PEER_PUBLIC" >> "$GITHUB_OUTPUT"
+          echo "preshared=$PRESHARED" >> "$GITHUB_OUTPUT"
+
+      - id: action
+        if: steps.wg_check.outputs.available == 'true'
+        uses: .
+        with:
+          endpoint: "192.0.2.1:51820"
+          endpoint_public_key: ${{ steps.keygen.outputs.peer_public }}
+          ips: "10.0.0.2/32"
+          allowed_ips: "10.0.0.0/24"
+          private_key: ${{ steps.keygen.outputs.private_key }}
+          preshared_key: ${{ steps.keygen.outputs.preshared }}
+          keepalive: "25"
+
+      - name: Assert WireGuard interface exists
+        if: steps.wg_check.outputs.available == 'true'
+        run: |
+          echo "Checking for WireGuard interfaces..."
+          WG_INTERFACES=$(sudo wg show interfaces)
+          echo "WireGuard interfaces: $WG_INTERFACES"
+          if [ -z "$WG_INTERFACES" ]; then
+            echo "FAIL: No WireGuard interface found after setup"
+            exit 1
+          fi
+          echo "PASS: WireGuard interface is configured: $WG_INTERFACES"
+
+      - name: Assert keepalive is configured
+        if: steps.wg_check.outputs.available == 'true'
+        run: |
+          echo "Checking persistent keepalive setting..."
+          WG_SHOW=$(sudo wg show all)
+          echo "WireGuard show output:"
+          echo "$WG_SHOW"
+          if ! echo "$WG_SHOW" | grep -q 'persistent keepalive'; then
+            echo "FAIL: 'persistent keepalive' not found in wg show output"
+            exit 1
+          fi
+          if ! echo "$WG_SHOW" | grep -q '25 seconds'; then
+            echo "FAIL: Keepalive value '25 seconds' not found in wg show output"
+            exit 1
+          fi
+          echo "PASS: Keepalive is configured"
+
+      - name: Assert preshared key is configured
+        if: steps.wg_check.outputs.available == 'true'
+        run: |
+          echo "Checking preshared key configuration..."
+          WG_SHOW=$(sudo wg show all)
+          echo "WireGuard show output:"
+          echo "$WG_SHOW"
+          if ! echo "$WG_SHOW" | grep -q 'preshared key'; then
+            echo "FAIL: 'preshared key' not found in wg show output"
+            exit 1
+          fi
+          echo "PASS: Preshared key is configured"
+
+      - name: Skip notice
+        if: steps.wg_check.outputs.available != 'true'
+        run: |
+          echo "SKIP: WireGuard kernel module not available in this environment"
+          echo "This is expected when running in Docker without WireGuard kernel support"
