@@ -9,6 +9,7 @@ Hardened by [Chainguard](https://www.chainguard.dev) from the upstream action at
 | Version | Tag | Upstream commit |
 |---------|-----|-----------------|
 | v1.1.0 | [`v1.1.0`](https://github.com/chainguard-actions/egor-tensin-setup-wireguard/tree/v1.1.0) | [`662ee0e`](https://github.com/egor-tensin/setup-wireguard/commit/662ee0ef7a3fe721de4dd02963da2b9fb11441de) |
+| v1.2.0 | [`v1.2.0`](https://github.com/chainguard-actions/egor-tensin-setup-wireguard/tree/v1.2.0) | [`9ada23f`](https://github.com/egor-tensin/setup-wireguard/commit/9ada23fc4805ad705d54ef854c1477920c01ad31) |
 
 ## Privacy
 
