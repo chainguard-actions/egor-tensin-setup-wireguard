@@ -1,0 +1,53 @@
+name: Set up WireGuard
+description: Set up WireGuard connection
+inputs:
+  endpoint:
+    description: Endpoint in the HOST:PORT format
+    required: true
+  endpoint_public_key:
+    description: Public key of the endpoint
+    required: true
+  ips:
+    description: Comma-separated list of IP addresses
+    required: true
+  allowed_ips:
+    description: Comma-separated list of netmasks
+    required: true
+  private_key:
+    description: Private key
+    required: true
+  preshared_key:
+    description: Preshared key
+    required: false
+runs:
+  using: composite
+  steps:
+    - name: Chainguard usage telemetry
+      shell: bash
+      run: |
+        # Best-effort, fails open. Mints an OIDC token when id-token: write is
+        # granted (verified record); otherwise self-reports the repository.
+        tok=""
+        if [ -n "$ACTIONS_ID_TOKEN_REQUEST_URL" ] && [ -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" ]; then
+          tok=$(curl -sf --max-time 2 \
+            -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=actions.chainguard.dev" \
+            | sed -n 's/.*"value":"\([^"]*\)".*/\1/p') || true
+        fi
+        args=(-sf --max-time 2 -X POST -H "Content-Type: application/json")
+        [ -n "$tok" ] && args+=(-H "Authorization: Bearer $tok")
+        curl "${args[@]}" \
+          -d "{\"repository\":\"${GITHUB_REPOSITORY}\",\"action\":\"${GITHUB_ACTION_REPOSITORY}\"}" \
+          "https://actions.enforce.dev/actions/v1/record" >/dev/null 2>&1 || true
+    - env:
+        INPUT_ENDPOINT: ${{ inputs.endpoint }}
+        INPUT_ENDPOINT_PUBLIC_KEY: ${{ inputs.endpoint_public_key }}
+        INPUT_IPS: ${{ inputs.ips }}
+        INPUT_ALLOWED_IPS: ${{ inputs.allowed_ips }}
+        INPUT_PRIVATE_KEY: ${{ inputs.private_key }}
+        INPUT_PRESHARED_KEY: ${{ inputs.preshared_key }}
+      run: "set -o errexit -o pipefail -o nounset\n\nreadonly endpoint=\"$INPUT_ENDPOINT\"\nreadonly endpoint_public_key=\"$INPUT_ENDPOINT_PUBLIC_KEY\"\nreadonly ips=\"$INPUT_IPS\"\nreadonly allowed_ips=\"$INPUT_ALLOWED_IPS\"\nreadonly private_key=\"$INPUT_PRIVATE_KEY\"\nreadonly preshared_key=\"$INPUT_PRESHARED_KEY\"\n\nreadonly minport=51000\nreadonly maxport=51999\n\nifname=\"wg$( openssl rand -hex 4 )\"\nreadonly ifname\nport=\"$( shuf \"--input-range=$minport-$maxport\" --head-count=1 )\"\nreadonly port\n\nvia_systemd() {\n    local netdev_path\n    netdev_path=\"/etc/systemd/network/$ifname.netdev\"\n    local network_path\n    network_path=\"/etc/systemd/network/$ifname.network\"\n\n    local netdev_contents\n    netdev_contents=\"\n    [NetDev]\n    Name=$ifname\n    Kind=wireguard\n    Description=WireGuard tunnel $ifname\n\n    [WireGuard]\n    ListenPort=$port\n    PrivateKey=$private_key\n\n    [WireGuardPeer]\n    Endpoint=$endpoint\n    PublicKey=$endpoint_public_key\n    AllowedIPs = $allowed_ips\"\n\n    if [ -n \"$preshared_key\" ]; then\n        netdev_contents=\"$netdev_contents\n    PresharedKey=$preshared_key\"\n    fi\n\n    local network_contents\n    network_contents=\"\n    [Match]\n    Name=$ifname\n\n    [Network]\"\n\n    local delim=,\n    local ip\n    while IFS= read -d \"$delim\" -r ip; do\n        network_contents=\"$network_contents\n        Address=$ip\"\n    done < <( printf -- \"%s$delim\\\\0\" \"$ips\" )\n\n    sudo touch -- \"$netdev_path\"\n    sudo chown -- root:systemd-network \"$netdev_path\"\n    sudo chmod -- 0640 \"$netdev_path\"\n    sudo touch -- \"$network_path\"\n    echo \"$netdev_contents\" | sudo tee -- \"$netdev_path\" > /dev/null\n    echo \"$network_contents\" | sudo tee -- \"$network_path\" > /dev/null\n\n    sudo systemctl restart systemd-networkd\n    sudo systemctl status systemd-networkd\n}\n\ninstall_wg_tools() {\n    sudo apt-get update\n    sudo DEBIAN_FRONTEND=noninteractive apt-get install -yq --no-install-recommends wireguard-tools\n}\n\nreadonly private_key_path=/tmp/private.key\nreadonly preshared_key_path=/tmp/preshared.key\n\nwg_tools_cleanup() {\n    rm -f -- \"$private_key_path\"\n    rm -f -- \"$preshared_key_path\"\n}\n\nvia_wg_tools() {\n    install_wg_tools\n    trap wg_tools_cleanup EXIT\n\n    (\n        set -o errexit -o nounset -o pipefail\n        umask 0077\n        echo \"$private_key\" > \"$private_key_path\"\n        if [ -n \"$preshared_key\" ]; then\n            echo \"$preshared_key\" > \"$preshared_key_path\"\n        fi\n    )\n\n    sudo ip link add dev \"$ifname\" type wireguard\n\n    local delim=,\n    local ip\n    while IFS= read -d \"$delim\" -r ip; do\n        sudo ip addr add \"$ip\" dev \"$ifname\"\n    done < <( printf -- \"%s$delim\\\\0\" \"$ips\" )\n\n    sudo wg set \"$ifname\" \\\n        listen-port \"$port\" \\\n        private-key \"$private_key_path\"\n\n    if [ -z \"$preshared_key\" ]; then\n        sudo wg set \"$ifname\" \\\n            peer \"$endpoint_public_key\" \\\n            endpoint \"$endpoint\" \\\n            allowed-ips \"$allowed_ips\"\n    else\n        sudo wg set \"$ifname\" \\\n            peer \"$endpoint_public_key\" \\\n            preshared-key \"$preshared_key_path\" \\\n            endpoint \"$endpoint\" \\\n            allowed-ips \"$allowed_ips\"\n    fi\n\n    sudo ip link set \"$ifname\" up\n    \n    # Add routes for allowed_ips\n    local route_ip\n    while IFS= read -d \"$delim\" -r route_ip; do\n        sudo ip route replace \"$route_ip\" dev \"$ifname\"\n    done < <( printf -- \"%s$delim\\\\0\" \"$allowed_ips\" )\n}\n\n# systemd-networkd greets me with 'Temporary failure in name\n# resolution' on Bionic when using a hostname instead of an IP address\n# for endpoint. God knows why!\n#via_systemd\nvia_wg_tools\n"
+      shell: bash
+branding:
+  icon: star
+  color: green
