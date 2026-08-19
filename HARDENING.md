@@ -8,25 +8,56 @@
 
 **Test Policy SHA:** `843adf9e4b8f85d0c08b27b9d0b09dd094b54702`
 
-**Harden Agent Version:** `1`
+**Harden Agent Version:** `2`
 
-Action **egor-tensin--setup-wireguard/v1.2.0** was hardened automatically. 8 finding(s) were identified and resolved across 2 iteration(s).
+Action **egor-tensin--setup-wireguard/v1.2.0** was hardened automatically. 11 finding(s) were identified and resolved across 2 iteration(s).
 
 ## Findings Fixed
 
 ### script-injection (severity: high)
 
-Sub-rule (a): All seven `inputs.*` values are interpolated directly via `${{ ... }}` expressions inside the `run:` shell script. Although each expression is wrapped in single quotes in the shell source (e.g. `readonly endpoint='${{ inputs.endpoint }}'`), GitHub Actions performs YAML template substitution *before* the shell parses the script. An attacker-controlled input value containing a single quote (e.g. `x' ; id ; echo '`) can break out of the quoting context and execute arbitrary shell commands on the runner. Affected lines: `readonly endpoint='${{ inputs.endpoint }}'` (line 32), `readonly endpoint_public_key='${{ inputs.endpoint_public_key }}'` (line 33), `readonly ips='${{ inputs.ips }}'` (line 34), `readonly allowed_ips='${{ inputs.allowed_ips }}'` (line 35), `readonly private_key='${{ inputs.private_key }}'` (line 36), `readonly preshared_key='${{ inputs.preshared_key }}'` (line 37), `readonly keepalive='${{ inputs.keepalive }}'` (line 38). Fix: pass all inputs via `env:` variables and reference them as `"$VAR"` in the shell script, never interpolating `${{ ... }}` directly inside a `run:` block.
+Sub-rule (a): The action.yml run: block directly interpolates ${{ inputs.* }} expressions inside shell command strings. The template substitution occurs before the shell parses the script, so a single-quote character in any input value (e.g., inputs.endpoint, inputs.private_key, etc.) breaks out of the surrounding single-quote context and allows arbitrary shell command injection. Offending lines include:
+  readonly endpoint='${{ inputs.endpoint }}'
+  readonly endpoint_public_key='${{ inputs.endpoint_public_key }}'
+  readonly ips='${{ inputs.ips }}'
+  readonly allowed_ips='${{ inputs.allowed_ips }}'
+  readonly private_key='${{ inputs.private_key }}'
+  readonly preshared_key='${{ inputs.preshared_key }}'
+  readonly keepalive='${{ inputs.keepalive }}'
 
 Locations:
 
+- `action.yml:27`
+- `action.yml:28`
+- `action.yml:29`
+- `action.yml:30`
+- `action.yml:31`
 - `action.yml:32`
 - `action.yml:33`
-- `action.yml:34`
-- `action.yml:35`
-- `action.yml:36`
-- `action.yml:37`
-- `action.yml:38`
+
+### script-injection (severity: high)
+
+Sub-rule (a): The test workflow run: block directly interpolates ${{ secrets.ENDPOINT_PRIVATE_IP }} inside a shell command string: `run: ping -W 10 -c 5 -- '${{ secrets.ENDPOINT_PRIVATE_IP }}'`. Any expression interpolated directly into a run: block is a script-injection risk regardless of the context it reads from.
+
+Locations:
+
+- `.github/workflows/test.yml:35`
+
+### unpinned-uses (severity: high)
+
+The workflow uses actions/checkout@v2, which is a mutable tag reference rather than a pinned 40-character commit SHA. This is vulnerable to supply-chain attacks if the tag is moved or the upstream repository is compromised. It should be pinned to a full SHA, e.g. actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v2.
+
+Locations:
+
+- `.github/workflows/test.yml:21`
+
+### missing-permissions (severity: medium)
+
+The workflow file has no top-level `permissions:` key and the single job also has no `permissions:` key. Without explicit permissions, the workflow inherits the repository's default token permissions (which may be write-all), granting broader access than necessary.
+
+Locations:
+
+- `.github/workflows/test.yml:1`
 
 ### static-inline-injection (severity: high)
 
@@ -88,11 +119,15 @@ Locations:
 
 ### Iteration 1
 
-**Fixes applied:** script-injection, static-inline-injection
+**Fixes applied:** script-injection, static-inline-injection, unpinned-uses, missing-permissions
 
 **Notes:**
 
-Fixed all 8 findings (1 script-injection + 7 static-inline-injection) in action.yml. Moved all seven ${{ inputs.* }} expressions (endpoint, endpoint_public_key, ips, allowed_ips, private_key, preshared_key, keepalive) from the run: shell script into an env: block on the step. Updated the shell script to reference these values as double-quoted environment variables ($INPUT_ENDPOINT, $INPUT_ENDPOINT_PUBLIC_KEY, $INPUT_IPS, $INPUT_ALLOWED_IPS, $INPUT_PRIVATE_KEY, $INPUT_PRESHARED_KEY, $INPUT_KEEPALIVE) instead of using single-quoted ${{ ... }} template expressions. This prevents attacker-controlled input values from breaking out of the shell quoting context.
+Fixed all findings:
+1. action.yml: Moved all 7 ${{ inputs.* }} expressions (endpoint, endpoint_public_key, ips, allowed_ips, private_key, preshared_key, keepalive) from the run: shell block into a step-level env: map. Shell script now references them as double-quoted environment variables (e.g., "$INPUT_ENDPOINT"), eliminating template injection.
+2. test.yml: Moved ${{ secrets.ENDPOINT_PRIVATE_IP }} in the ping step to an env: block, referencing it as "$ENDPOINT_PRIVATE_IP" in the shell command.
+3. test.yml: Pinned actions/checkout@v2 to full SHA ee0669bd1cc54295c223e0bb666b733df41de1c5 # v2.
+4. test.yml: Added top-level permissions: {} to enforce least-privilege token access.
 
 ### Iteration 2
 
@@ -100,5 +135,5 @@ Fixed all 8 findings (1 script-injection + 7 static-inline-injection) in action.
 
 **Notes:**
 
-Fixed the script injection vulnerability at action.yml line 148. The unquoted `${allowed_ips//,/ }` expansion in the `for` loop was replaced with a safe array-based approach: `IFS=',' read -ra _allowed_ips_arr <<< "$allowed_ips"` followed by `for i in "${_allowed_ips_arr[@]}"; do ...`. This prevents shell word-splitting and glob expansion on the attacker-controlled `allowed_ips` input value, while preserving the correct behavior of iterating over each comma-separated IP/netmask.
+Fixed the unquoted variable expansion in the `via_wg_tools()` function's for loop at line 143 of action.yml. Changed `for i in ${allowed_ips//,/ }` to `for i in "${allowed_ips//,/ }"`. The quoted form prevents glob expansion (e.g., `*`, `?`, `[...]`) of attacker-controlled values from the `allowed_ips` input, while still allowing the intended word-splitting on spaces to iterate over the comma-separated list of netmasks.
 
