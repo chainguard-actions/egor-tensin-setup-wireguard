@@ -1,0 +1,38 @@
+name: Test
+
+on:
+  push:
+  pull_request:
+  schedule:
+    # Weekly, at 5:45 AM on Friday (somewhat randomly chosen).
+    - cron: '45 5 * * 5'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-18.04, ubuntu-20.04, ubuntu-latest]
+    runs-on: '${{ matrix.os }}'
+    name: 'Test: ${{ matrix.os }}'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@0717577d45739eb3c851188b29f50ed6c0b2194e # v2
+      - name: Set up WireGuard
+        uses: ./
+        with:
+          endpoint: '${{ secrets.ENDPOINT }}'
+          endpoint_public_key: '${{ secrets.ENDPOINT_PUBLIC }}'
+          ips: '${{ secrets.IPS }}'
+          allowed_ips: '${{ secrets.ALLOWED_IPS }}'
+          private_key: '${{ secrets.PRIVATE }}'
+          preshared_key: '${{ secrets.PRESHARED }}'
+      - name: Check endpoint
+        env:
+          ENDPOINT_PRIVATE_IP: ${{ secrets.ENDPOINT_PRIVATE_IP }}
+        run: ping -W 10 -c 5 -- "$ENDPOINT_PRIVATE_IP"

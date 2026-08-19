@@ -1,4 +1,4 @@
-name: Test basic WireGuard setup
+name: Test basic WireGuard setup (no preshared key)
 on:
   workflow_dispatch:
 jobs:
@@ -6,55 +6,128 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - name: Generate WireGuard keys
-        id: keygen
+
+      - name: Install wireguard-tools and prepare mocks
         run: |
           sudo apt-get update -qq
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -yq --no-install-recommends wireguard-tools
-          PRIVATE_KEY=$(wg genkey)
-          ENDPOINT_PRIVATE=$(wg genkey)
-          ENDPOINT_PUBLIC=$(echo "$ENDPOINT_PRIVATE" | wg pubkey)
-          echo "private_key=$PRIVATE_KEY" >> "$GITHUB_OUTPUT"
-          echo "endpoint_public=$ENDPOINT_PUBLIC" >> "$GITHUB_OUTPUT"
-      - name: Load WireGuard kernel module if available
-        run: |
-          sudo modprobe wireguard 2>/dev/null || true
-      - id: action
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -yq --no-install-recommends wireguard-tools openssl
+
+          # Generate WireGuard keys
+          PRIVATE_KEY="$(wg genkey)"
+          PEER_PRIVATE="$(wg genkey)"
+          PEER_PUBLIC="$(echo "$PEER_PRIVATE" | wg pubkey)"
+
+          echo "PRIVATE_KEY=$PRIVATE_KEY" >> "$GITHUB_ENV"
+          echo "PEER_PUBLIC=$PEER_PUBLIC" >> "$GITHUB_ENV"
+
+          # Initialize tracking files
+          : > /tmp/wg_set_calls.txt
+          : > /tmp/wg_addrs.txt
+          : > /tmp/wg_routes.txt
+          : > /tmp/wg_up.txt
+
+          # Create mock directory that will be prepended to PATH
+          mkdir -p /tmp/mock-bin
+
+          # Mock sudo: intercepts WireGuard-specific commands, passes others through
+          # Uses $* to match the full command string
+          cat > /tmp/mock-bin/sudo << 'MOCKEOF'
+          #!/bin/sh
+          case "$*" in
+            "ip link add dev "*)
+              # Extract interface name from args: sudo ip link add dev IFNAME type wireguard
+              # $1=ip $2=link $3=add $4=dev $5=IFNAME $6=type $7=wireguard
+              echo "$5" > /tmp/wg_ifname.txt
+              echo "[mock] ip link add dev $5 type wireguard" >&2
+              exit 0
+              ;;
+            "ip addr add "*)
+              echo "$*" >> /tmp/wg_addrs.txt
+              echo "[mock] ip addr add: $*" >&2
+              exit 0
+              ;;
+            "wg set "*)
+              echo "$*" >> /tmp/wg_set_calls.txt
+              echo "[mock] wg set: $*" >&2
+              exit 0
+              ;;
+            "ip link set "*)
+              echo "UP" >> /tmp/wg_up.txt
+              echo "[mock] ip link set up" >&2
+              exit 0
+              ;;
+            "ip route replace "*)
+              echo "$*" >> /tmp/wg_routes.txt
+              echo "[mock] ip route replace: $*" >&2
+              exit 0
+              ;;
+            "DEBIAN_FRONTEND="*" apt-get "*)
+              exec /usr/bin/sudo "$@"
+              ;;
+            "apt-get "*)
+              exec /usr/bin/sudo "$@"
+              ;;
+            *)
+              exec /usr/bin/sudo "$@"
+              ;;
+          esac
+          MOCKEOF
+          chmod +x /tmp/mock-bin/sudo
+
+          echo "Mock setup complete"
+
+      - name: Set up WireGuard (no preshared key)
+        id: action
         uses: .
-        continue-on-error: true
+        env:
+          PATH: /tmp/mock-bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
         with:
-          endpoint: "10.0.0.1:51820"
-          endpoint_public_key: ${{ steps.keygen.outputs.endpoint_public }}
-          ips: "10.200.0.2/32"
+          endpoint: "127.0.0.1:51820"
+          endpoint_public_key: ${{ env.PEER_PUBLIC }}
+          ips: "10.200.0.1/24"
           allowed_ips: "10.200.0.0/24"
-          private_key: ${{ steps.keygen.outputs.private_key }}
-      - name: Check result
+          private_key: ${{ env.PRIVATE_KEY }}
+
+      - name: Assert wg set was called (interface configured)
         run: |
-          echo "Action outcome: ${{ steps.action.outcome }}"
-          if [ "${{ steps.action.outcome }}" = "success" ]; then
-            echo "Action succeeded, verifying WireGuard interface..."
-            ip link show
-            if ip link show | grep -q 'wg'; then
-              echo "PASS: WireGuard interface found"
-            else
-              echo "FAIL: Action succeeded but no WireGuard interface found"
-              exit 1
-            fi
-            ip route show
-            if ip route show | grep -q '10.200.0.0/24'; then
-              echo "PASS: Route for allowed_ips exists"
-            else
-              echo "FAIL: Route for 10.200.0.0/24 not found"
-              exit 1
-            fi
+          echo "=== wg set calls ==="
+          cat /tmp/wg_set_calls.txt
+          if grep -q 'wg set' /tmp/wg_set_calls.txt; then
+            echo "PASS: wg set was called to configure the WireGuard interface"
           else
-            echo "Action failed - checking if it is due to missing WireGuard kernel module..."
-            dmesg 2>/dev/null | tail -5 || true
-            if sudo modprobe wireguard 2>&1 | grep -qi 'not found\|unknown\|error'; then
-              echo "SKIP: WireGuard kernel module not available in this environment"
-            else
-              echo "WireGuard module may be available but action still failed"
-              echo "SKIP: Accepting failure in act Docker environment without full kernel support"
-            fi
+            echo "FAIL: wg set was not called"
+            exit 1
           fi
-          echo "PASS"
+
+      - name: Assert interface was brought up
+        run: |
+          echo "=== ip link set up calls ==="
+          cat /tmp/wg_up.txt
+          if grep -q 'UP' /tmp/wg_up.txt; then
+            echo "PASS: Interface was brought up"
+          else
+            echo "FAIL: Interface was not brought up"
+            exit 1
+          fi
+
+      - name: Assert IP address was configured
+        run: |
+          echo "=== ip addr add calls ==="
+          cat /tmp/wg_addrs.txt
+          if grep -q '10.200.0.1' /tmp/wg_addrs.txt; then
+            echo "PASS: IP address 10.200.0.1 was configured"
+          else
+            echo "FAIL: IP address 10.200.0.1 was not configured"
+            exit 1
+          fi
+
+      - name: Assert route was added for allowed IPs
+        run: |
+          echo "=== ip route replace calls ==="
+          cat /tmp/wg_routes.txt
+          if grep -q '10.200.0.0/24' /tmp/wg_routes.txt; then
+            echo "PASS: Route for 10.200.0.0/24 was added"
+          else
+            echo "FAIL: Route for 10.200.0.0/24 was not added"
+            exit 1
+          fi
