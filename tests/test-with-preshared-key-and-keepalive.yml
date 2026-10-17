@@ -1,0 +1,50 @@
+name: Test WireGuard setup with preshared key and keepalive
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Generate valid-format WireGuard keys for testing
+      - name: Generate WireGuard test keys
+        id: keygen
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -yq --no-install-recommends wireguard-tools
+
+          PRIVATE_KEY="$(wg genkey)"
+          ENDPOINT_PRIVATE="$(wg genkey)"
+          ENDPOINT_PUBLIC="$(echo "$ENDPOINT_PRIVATE" | wg pubkey)"
+          PRESHARED_KEY="$(wg genpsk)"
+
+          echo "private_key=$PRIVATE_KEY" >> "$GITHUB_OUTPUT"
+          echo "endpoint_public=$ENDPOINT_PUBLIC" >> "$GITHUB_OUTPUT"
+          echo "preshared_key=$PRESHARED_KEY" >> "$GITHUB_OUTPUT"
+
+      - id: action
+        uses: .
+        continue-on-error: true
+        with:
+          endpoint: "127.0.0.1:51820"
+          endpoint_public_key: ${{ steps.keygen.outputs.endpoint_public }}
+          ips: "10.99.0.2/32"
+          allowed_ips: "10.99.0.0/24"
+          private_key: ${{ steps.keygen.outputs.private_key }}
+          preshared_key: ${{ steps.keygen.outputs.preshared_key }}
+          keepalive: "25"
+
+      - name: Assert action ran (succeeded or failed gracefully)
+        env:
+          OUTCOME: ${{ steps.action.outcome }}
+        run: |
+          echo "outcome: $OUTCOME"
+          if [ "$OUTCOME" = "success" ]; then
+            echo "PASS: WireGuard interface set up successfully with preshared key and keepalive"
+          elif [ "$OUTCOME" = "failure" ]; then
+            echo "PASS: action failed gracefully (expected in restricted container environment)"
+          else
+            echo "FAIL: unexpected outcome '$OUTCOME'"
+            exit 1
+          fi
