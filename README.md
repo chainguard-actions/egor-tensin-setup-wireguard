@@ -12,6 +12,7 @@ Hardened by [Chainguard](https://www.chainguard.dev) from the upstream action at
 | v1.2.0 | [`v1.2.0`](https://github.com/chainguard-actions/egor-tensin-setup-wireguard/tree/v1.2.0) | [`9ada23f`](https://github.com/egor-tensin/setup-wireguard/commit/9ada23fc4805ad705d54ef854c1477920c01ad31) | [`HARDENING.md`](https://github.com/chainguard-actions/egor-tensin-setup-wireguard/blob/v1.2.0/HARDENING.md) |
 | v1.2.1 | [`v1.2.1`](https://github.com/chainguard-actions/egor-tensin-setup-wireguard/tree/v1.2.1) | [`f0c5141`](https://github.com/egor-tensin/setup-wireguard/commit/f0c5141578f528b756cbf410947c2313f6fe44a2) | [`HARDENING.md`](https://github.com/chainguard-actions/egor-tensin-setup-wireguard/blob/v1.2.1/HARDENING.md) |
 | v1.2.2 | [`v1.2.2`](https://github.com/chainguard-actions/egor-tensin-setup-wireguard/tree/v1.2.2) | [`0c34af0`](https://github.com/egor-tensin/setup-wireguard/commit/0c34af0f8ab752230aa963e763d97f3bec8422ec) | [`HARDENING.md`](https://github.com/chainguard-actions/egor-tensin-setup-wireguard/blob/v1.2.2/HARDENING.md) |
+| v1.2.3 | [`v1.2.3`](https://github.com/chainguard-actions/egor-tensin-setup-wireguard/tree/v1.2.3) | [`7c19600`](https://github.com/egor-tensin/setup-wireguard/commit/7c196005c687dd748cc06c953d54934a312744ee) | [`HARDENING.md`](https://github.com/chainguard-actions/egor-tensin-setup-wireguard/blob/v1.2.3/HARDENING.md) |
 
 ## Privacy
 
