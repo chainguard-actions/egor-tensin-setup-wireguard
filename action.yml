@@ -190,11 +190,10 @@ runs:
             sudo ip link set "$ifname" up
 
             # Add routes for allowed_ips
-            # Split on commas and whitespace (as upstream did) without globbing.
-            local routes=()
-            if [ -n "$allowed_ips" ]; then
-                read -r -d '' -a routes <<< "${allowed_ips//,/ }" || true
-            fi
+            # Split on commas and whitespace (same split and glob as upstream's unquoted expansion).
+            local routes
+            # shellcheck disable=SC2206,SC2086
+            routes=(${allowed_ips//,/ })
             local i
             for i in ${routes[@]+"${routes[@]}"}; do sudo ip route replace "$i" dev "$ifname"; done
         }
